@@ -19,10 +19,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/jack-work/goop/daemon"
 	"github.com/jack-work/goop/loopapi"
 	"github.com/jack-work/goop/msauth"
 )
@@ -67,6 +69,16 @@ func main() {
 		err = cmdMembers(ctx, client, rest, asJSON)
 	case "whoami":
 		err = cmdWhoami(ctx, auth)
+	case "daemon":
+		err = cmdDaemon(ctx)
+	case "sync":
+		err = cmdSync(ctx)
+	case "cache-search", "cs":
+		err = cmdCacheSearch(rest, asJSON)
+	case "cache-read", "cr":
+		err = cmdCacheRead(rest, asJSON)
+	case "cache-stats":
+		err = cmdCacheStats()
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -91,11 +103,18 @@ usage:
   loop members <workspace>         list who a workspace is shared with
   loop whoami                      show the signed-in identity
 
+  loop daemon                      run the sync daemon (foreground)
+  loop sync                        run a one-shot sync now
+  loop cache-search <query>        full-text search the local cache
+  loop cache-read <ws> <page>      read a page from the local cache (instant)
+  loop cache-stats                 show cache statistics
+
 global flags:
   --json       emit JSON
   -v           verbose auth logging
 
 <workspace> and [page] are case-insensitive substrings of the title/name.
+config: ~/.goop/config.toml
 `)
 }
 
@@ -472,4 +491,90 @@ func firstNonEmpty(ss ...string) string {
 		}
 	}
 	return ""
+}
+
+// ---- daemon / cache commands ----
+
+func cmdDaemon(ctx context.Context) error {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+	cfg := daemon.LoadConfig()
+	return daemon.Run(ctx, cfg)
+}
+
+func cmdSync(ctx context.Context) error {
+	cfg := daemon.LoadConfig()
+	db, err := daemon.OpenDB(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return daemon.Sync(ctx, cfg, db)
+}
+
+func cmdCacheSearch(args []string, asJSON bool) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: loop cache-search <query>")
+	}
+	cfg := daemon.LoadConfig()
+	db, err := daemon.OpenDB(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	results, err := db.Search(strings.Join(args, " "))
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return printJSON(results)
+	}
+	if len(results) == 0 {
+		fmt.Println("no results")
+		return nil
+	}
+	for _, r := range results {
+		fmt.Printf("  \x1b[1m%s\x1b[0m  \x1b[2m(%s, %s)\x1b[0m\n", r.PageTitle, r.WorkspaceTitle, shortDate(r.Modified))
+		if r.Snippet != "" {
+			fmt.Printf("    %s\n", r.Snippet)
+		}
+	}
+	return nil
+}
+
+func cmdCacheRead(args []string, asJSON bool) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: loop cache-read <workspace> <page>")
+	}
+	cfg := daemon.LoadConfig()
+	db, err := daemon.OpenDB(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	text, err := db.ReadCached(args[0], strings.Join(args[1:], " "))
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return printJSON(map[string]string{"text": text})
+	}
+	fmt.Println(text)
+	return nil
+}
+
+func cmdCacheStats() error {
+	cfg := daemon.LoadConfig()
+	db, err := daemon.OpenDB(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	ws, pg, chars, lastSync, _ := db.Stats()
+	fmt.Printf("cache: %s\n", cfg.DBPath)
+	fmt.Printf("  workspaces: %d\n", ws)
+	fmt.Printf("  pages:      %d\n", pg)
+	fmt.Printf("  text:       %d chars (%.1f KB)\n", chars, float64(chars)/1024)
+	fmt.Printf("  last sync:  %s\n", lastSync)
+	return nil
 }
