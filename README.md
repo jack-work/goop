@@ -1,84 +1,117 @@
-# goop — a Microsoft Loop CLI
+# goop
 
-`loop` gives you command-line **read** access to Microsoft Loop workspaces
-("loops") and pages: list them, search them, see who they are shared with, and
-print a page's text content. It was reverse-engineered from the
-`loop.cloud.microsoft` web app (see [docs/REVERSE-ENGINEERING.md](docs/REVERSE-ENGINEERING.md)).
+**A CLI that oozes into Microsoft Loop and slurps out your pages as text.**
 
-Before this, there was **no** programmatic access to your loops. Now there is.
+Loop is designed for *highly collaborative human interaction* -- colorful cursors, real-time co-editing, emoji reactions. Goop treats it like a flat-file database. We regret nothing.
 
 ```
-loop list [--top N] [--all]        list your workspaces (most-recent first)
-loop search <query> [--pages]      search workspaces by title (and page names)
-loop pages <workspace>             list the pages in a workspace
-loop read  <workspace> [page]      print a page's text content
-loop members <workspace>           list who a workspace is shared with
-loop whoami                        show the signed-in identity
+loop list                          # what loops do I have?
+loop pages "App Studio"            # what's in there?
+loop read "App Studio" "Onboarding" # give me the text
+loop cache-search "orchard api"    # full-text search, instant
+loop members "App Studio"          # who's in here?
 ```
 
-`<workspace>` and `[page]` are case-insensitive substrings of the title/name.
-Add `--json` to any command for machine-readable output, `-v` for auth logging.
+## Why
 
-## Examples
+There is no official Loop API. The community has been [begging for one since 2024](https://learn.microsoft.com/en-us/answers/questions/4427976/looking-for-info-on-api-access-to-content-in-loop). Microsoft has a pre-alpha internal CLI that approximately nobody can use. Meanwhile your team's entire knowledge base lives in Loop and your agents can't read it.
+
+Goop fixes that by reverse-engineering the Loop web app's actual API calls (Substrate discovery + SharePoint Embedded content + Fluid Framework snapshot parsing). Full writeup: [`docs/REVERSE-ENGINEERING.md`](docs/REVERSE-ENGINEERING.md).
+
+## What you get
+
+| Command | What it does | Speed |
+|---------|-------------|-------|
+| `loop list [--all]` | Your workspaces, most-recent first | ~2s |
+| `loop search <q> [--pages]` | Match workspace/page titles | ~2s (or 12s with --pages) |
+| `loop pages <workspace>` | Pages in a workspace | ~2s |
+| `loop read <ws> [page]` | Full page text content | ~3.5s |
+| `loop members <workspace>` | Permissions/sharing list | ~3s |
+| `loop whoami` | Signed-in identity | ~1s |
+| `loop daemon` | Background sync to SQLite | runs forever |
+| `loop sync` | One-shot sync | ~30s per workspace |
+| `loop cache-search <q>` | FTS5 full-text search | **~60ms** |
+| `loop cache-read <ws> <page>` | Read from local cache | **~60ms** |
+| `loop cache-stats` | Cache health | instant |
+
+Every command accepts `--json` for machine consumption, `-v` for auth logging.
+
+## Install
 
 ```pwsh
-loop list --all
-loop search orchard
-loop pages "App Studio"
-loop read "App Studio" "Onboarding"
-loop members "App Studio"
-loop read "App Studio" "AI Research" --json | ConvertFrom-Json
+git clone https://github.com/jack-work/goop.git
+cd goop
+go build -o loop.exe .
+# or:
+./install.ps1   # builds + copies to ~/.goop/bin + adds to PATH
 ```
 
-## How it works (short version)
+**Requirements:** Go 1.24+, Windows (WAM broker auth), `Az.Accounts` PowerShell module installed.
 
-Loop is a shell over two Microsoft backends:
+## Configuration
 
-| What | Where | Endpoint |
-|------|-------|----------|
-| Discover your loops | **Substrate** (`substrate.office.com`) | `/recommended/api/v1.1/loop/recent`, `/deltasync`, `/workspaces/{pod}/permissions` |
-| Store loop content | **SharePoint Embedded** (`*.sharepoint*.com`) | `/_api/v2.0/drives/{drive}/…/children`, `/_api/v2.1/drives/{drive}/items/{item}/opStream/snapshots/trees/latest` |
+```toml
+# ~/.goop/config.toml
+[[workspace]]
+title = "App Studio"
 
-Each workspace is a SharePoint Embedded **container** (a drive). Each page is a
-`.loop` file, which is a **Fluid Framework** document. Page text is reconstructed
-from the Fluid merge-tree (`segmentTexts`) inside the snapshot — see
-[`loopapi/fluid.go`](loopapi/fluid.go).
+[[workspace]]
+title = "My Other Loop"
+
+sync_interval = "1h"
+# db_path = "C:/Users/you/.goop/data/loop.db"   # default shown
+```
+
+## How it works
+
+Loop stores content across two backends. Goop talks to both:
+
+1. **Substrate** (`substrate.office.com`) -- workspace discovery, permissions, recent items
+2. **SharePoint Embedded** (`*.sharepoint*.com`) -- page enumeration + Fluid snapshot read
+
+Pages are `.loop` files = Fluid Framework documents. Goop fetches the ODSP snapshot, walks the merge-tree `segmentTexts` arrays, and reconstructs readable text. Tables and embedded components are partially supported (text nodes extracted, structure not yet preserved).
 
 ### Auth
 
-Tokens are acquired via the **Windows WAM broker** (MSAL.NET, driven by a small
-PowerShell script) using the first-party **Microsoft Office** public client
-(`d3590ed6-52b3-4102-aeff-aad2292ab01c`), which is broker-registered and trusted
-by Substrate/SharePoint. It falls back to the **Azure CLI** (`az account
-get-access-token`). Per-resource tokens are cached on disk until shortly before
-expiry. See [`msauth/`](msauth) and
-[RECOMMENDATIONS.md](RECOMMENDATIONS.md) for the proposal to promote `msauth`
-into a shared library used by tomb/jacques/icy too.
+Tokens acquired via the **Windows WAM broker** using the Microsoft Office first-party client (`d3590ed6-...`), falling back to `az account get-access-token`. Cached per-scope on disk (~50 min lifetime). The broker satisfies Conditional Access on managed devices where device-code flow fails.
 
-Two headers matter for content reads:
+One critical header for content reads: **`X-CLP-Compliant-App: true`** -- without it, SharePoint returns 403 regardless of token validity.
 
-- `Authorization: Bearer <SharePoint token for the workspace's host>`
-- `X-CLP-Compliant-App: true` — asserts the client honors sensitivity-label /
-  DLP policy. **Without it SharePoint returns `403 Insufficient permissions on
-  file`.**
+### The `msauth` package
 
-## Build / install
+[`msauth/`](msauth) is a reusable Go package for acquiring Microsoft Entra tokens via WAM broker + az CLI fallback with disk caching. It's designed to be extracted into a shared module -- see [`RECOMMENDATIONS.md`](RECOMMENDATIONS.md).
+
+## Daemon mode
 
 ```pwsh
-go build -o loop.exe .
-# or
-./install.ps1     # builds and copies loop.exe onto your PATH
+loop daemon          # foreground (Ctrl+C to stop)
+loop sync            # one-shot, then exit
 ```
 
-Requirements: Go 1.24+, Windows with the WAM broker (or `az login`), and the
-`Az.Accounts` PowerShell module (ships the MSAL assemblies the broker script
-loads — the same dependency tomb uses).
+Or register with [angl](https://github.com/jack-work/angl) for supervised background operation:
 
-## Limitations / not-yet
+```pwsh
+angl register goop-sync --interval 0 --charge "Loop sync daemon" -- loop.exe daemon
+angl start goop-sync
+```
 
-- **Read-focused.** No create/edit yet (write is a possible next step: Fluid ops
-  through the delta service, or SharePoint file APIs for whole-file operations).
-- Substrate `recent` caps at 30 items; `--all` merges `recent` + `deltasync` to
-  widen coverage, but there is no full historical pagination yet.
-- Fluid text extraction recovers paragraph/list text well; it does not (yet)
-  render tables, embedded components, or comments as structured output.
+The daemon syncs configured workspaces hourly, only re-fetching pages whose `lastModifiedDateTime` changed. Incremental syncs take ~3s when nothing changed vs ~30s for a full workspace flush.
+
+## Performance
+
+| Operation | Live (network) | Cached (SQLite) | Speedup |
+|-----------|---------------|-----------------|---------|
+| Page read | 3,899ms | 61ms | **55x** |
+| Search | 2,613ms | 62ms | **38x** |
+
+## Limitations
+
+- **Read-only.** Write access (append/edit) is a future goal.
+- **Text extraction is ~90% coverage.** Pages using only tables/matrices or embedded components may extract partially or empty.
+- Substrate `recent` caps at 30 items; `--all` merges with `deltasync` for broader coverage.
+- Windows-only for now (WAM broker dependency). Linux/Mac would need an alternative auth path.
+
+## See also
+
+- [`docs/REVERSE-ENGINEERING.md`](docs/REVERSE-ENGINEERING.md) -- full technical writeup of Loop's undocumented APIs
+- [`RECOMMENDATIONS.md`](RECOMMENDATIONS.md) -- proposal for a shared `msauth` library across CLI tools
