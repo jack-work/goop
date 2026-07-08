@@ -1,0 +1,7 @@
+/loop
+/loop.exe
+/goop
+/goop.exe
+*.log
+# local scratch
+/scratch/
