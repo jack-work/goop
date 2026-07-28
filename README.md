@@ -73,13 +73,15 @@ Pages are `.loop` files = Fluid Framework documents. Goop fetches the ODSP snaps
 
 ### Auth
 
-Tokens acquired via the **Windows WAM broker** using the Microsoft Office first-party client (`d3590ed6-...`), falling back to `az account get-access-token`. Cached per-scope on disk (~50 min lifetime). The broker satisfies Conditional Access on managed devices where device-code flow fails.
+Tokens come from the shared [`msauth`](https://github.com/jack-work/msauth) foundation: the **Windows WAM broker** first, using the Microsoft Office first-party client (`d3590ed6-...`) in the corporate tenant, then `az account get-access-token`. The foundation owns the DPAPI-protected per-user token cache, the two-minute refresh skew, and sanitized diagnostics with stable error codes. The broker satisfies Conditional Access on managed devices where device-code flow fails.
+
+goop asks for exactly one resource per request: `https://substrate.office.com/.default` for discovery, and `https://<workspace sharepoint host>/.default` for content.
 
 One critical header for content reads: **`X-CLP-Compliant-App: true`** -- without it, SharePoint returns 403 regardless of token validity.
 
-### The `msauth` package
+### The `auth` adapter
 
-[`msauth/`](msauth) is a reusable Go package for acquiring Microsoft Entra tokens via WAM broker + az CLI fallback with disk caching. It's designed to be extracted into a shared module -- see [`RECOMMENDATIONS.md`](RECOMMENDATIONS.md).
+[`auth/`](auth) is a thin adapter over the shared `msauth` module: it selects the client, tenant, and `wam-first` policy, and renders foundation failures so every credential source that was tried is named with its stable error code. There is no goop-local token cache and no sidecar PowerShell script.
 
 ## Daemon mode
 
@@ -114,4 +116,3 @@ The daemon syncs configured workspaces hourly, only re-fetching pages whose `las
 ## See also
 
 - [`docs/REVERSE-ENGINEERING.md`](docs/REVERSE-ENGINEERING.md) -- full technical writeup of Loop's undocumented APIs
-- [`RECOMMENDATIONS.md`](RECOMMENDATIONS.md) -- proposal for a shared `msauth` library across CLI tools

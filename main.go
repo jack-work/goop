@@ -18,21 +18,28 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/jack-work/goop/auth"
 	"github.com/jack-work/goop/daemon"
 	"github.com/jack-work/goop/loopapi"
-	"github.com/jack-work/goop/msauth"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run executes one command and returns the process exit code: 0 on success or
+// help, 1 on a runtime error, 2 on a usage error (missing or unknown command).
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		usage(stderr)
+		return 2
 	}
 	ctx := context.Background()
 
@@ -40,7 +47,7 @@ func main() {
 	verbose := false
 	asJSON := false
 	var rest []string
-	for _, a := range os.Args[2:] {
+	for _, a := range args[1:] {
 		switch a {
 		case "-v", "--verbose":
 			verbose = true
@@ -51,12 +58,15 @@ func main() {
 		}
 	}
 
-	auth := msauth.New()
-	auth.Verbose = verbose
-	client := loopapi.New(auth)
+	tokens, err := auth.New()
+	if err != nil {
+		fmt.Fprintf(stderr, "\x1b[31merror:\x1b[0m %v\n", err)
+		return 1
+	}
+	tokens.Verbose = verbose
+	client := loopapi.New(tokens)
 
-	var err error
-	switch os.Args[1] {
+	switch args[0] {
 	case "list", "ls":
 		err = cmdList(ctx, client, rest, asJSON)
 	case "search", "find":
@@ -68,7 +78,7 @@ func main() {
 	case "members", "perms":
 		err = cmdMembers(ctx, client, rest, asJSON)
 	case "whoami":
-		err = cmdWhoami(ctx, auth)
+		err = cmdWhoami(ctx, tokens, stdout)
 	case "daemon":
 		err = cmdDaemon(ctx)
 	case "sync":
@@ -80,20 +90,21 @@ func main() {
 	case "cache-stats":
 		err = cmdCacheStats()
 	case "-h", "--help", "help":
-		usage()
+		usage(stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
-		usage()
-		os.Exit(2)
+		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
+		usage(stderr)
+		return 2
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\x1b[31merror:\x1b[0m %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "\x1b[31merror:\x1b[0m %v\n", err)
+		return 1
 	}
+	return 0
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `loop - read Microsoft Loop from the CLI
+func usage(w io.Writer) {
+	fmt.Fprint(w, `loop - read Microsoft Loop from the CLI
 
 usage:
   loop list [--top N] [--all]      list your workspaces (loops)
@@ -323,16 +334,16 @@ func cmdMembers(ctx context.Context, c *loopapi.Client, args []string, asJSON bo
 	return nil
 }
 
-func cmdWhoami(ctx context.Context, auth *msauth.Provider) error {
-	tok, err := auth.Token(ctx, "https://substrate.office.com/.default")
+func cmdWhoami(ctx context.Context, tokens loopapi.TokenSource, stdout io.Writer) error {
+	tok, err := tokens.Token(ctx, loopapi.SubstrateScope)
 	if err != nil {
 		return err
 	}
 	claims := decodeClaims(tok)
-	fmt.Printf("signed in as \x1b[1m%s\x1b[0m\n", firstNonEmpty(claims["upn"], claims["unique_name"], claims["email"]))
-	fmt.Printf("  name:   %s\n", claims["name"])
-	fmt.Printf("  tenant: %s\n", claims["tid"])
-	fmt.Printf("  appid:  %s (%s)\n", claims["appid"], claims["app_displayname"])
+	fmt.Fprintf(stdout, "signed in as \x1b[1m%s\x1b[0m\n", firstNonEmpty(claims["upn"], claims["unique_name"], claims["email"]))
+	fmt.Fprintf(stdout, "  name:   %s\n", claims["name"])
+	fmt.Fprintf(stdout, "  tenant: %s\n", claims["tid"])
+	fmt.Fprintf(stdout, "  appid:  %s (%s)\n", claims["appid"], claims["app_displayname"])
 	return nil
 }
 

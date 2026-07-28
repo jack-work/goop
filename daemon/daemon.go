@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jack-work/goop/auth"
 	"github.com/jack-work/goop/loopapi"
-	"github.com/jack-work/goop/msauth"
 	_ "modernc.org/sqlite"
 )
 
@@ -261,9 +261,12 @@ func (d *DB) Stats() (workspaces, pages int, totalChars int64, lastSync string, 
 
 // Sync performs a full sync of configured workspaces.
 func Sync(ctx context.Context, cfg Config, db *DB) error {
-	auth := msauth.New()
-	auth.Verbose = true
-	client := loopapi.New(auth)
+	tokens, err := auth.New()
+	if err != nil {
+		return err
+	}
+	tokens.Verbose = true
+	client := loopapi.New(tokens)
 
 	allWS, err := client.Recent(ctx, 30)
 	if err != nil {

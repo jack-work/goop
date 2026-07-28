@@ -9,8 +9,9 @@
 //     are ".loop" files whose content is a Fluid Framework document, read from
 //     the drive item's /opStream/snapshots/trees/latest endpoint.
 //
-// Auth is delegated per resource (substrate / the workspace's SharePoint host /
-// graph) via the msauth package.
+// Auth is delegated per resource (Substrate, or the workspace's SharePoint
+// host) through a TokenSource; goop backs that with the shared msauth
+// foundation.
 package loopapi
 
 import (
@@ -20,20 +21,31 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
-
-	"github.com/jack-work/goop/msauth"
 )
+
+// SubstrateScope is the resource scope for Loop's Substrate discovery APIs.
+const SubstrateScope = "https://substrate.office.com/.default"
+
+// SharePointScope is the resource scope for one SharePoint Embedded host that
+// stores a workspace's content.
+func SharePointScope(host string) string { return "https://" + host + "/.default" }
+
+// TokenSource acquires a bearer token for exactly one resource scope.
+type TokenSource interface {
+	Token(ctx context.Context, scope string) (string, error)
+}
 
 // Client talks to Substrate and SharePoint on behalf of the signed-in user.
 type Client struct {
-	auth *msauth.Provider
+	auth TokenSource
 	http *http.Client
 	upn  string // anchor mailbox, resolved lazily
 }
 
-// New returns a Client using the given token provider.
-func New(auth *msauth.Provider) *Client {
+// New returns a Client using the given token source.
+func New(auth TokenSource) *Client {
 	return &Client{auth: auth, http: http.DefaultClient}
 }
 
@@ -170,7 +182,7 @@ func encodePod(pod string) string {
 }
 
 func (c *Client) substrateGet(ctx context.Context, u string, out any) error {
-	tok, err := c.auth.Token(ctx, "https://substrate.office.com/.default")
+	tok, err := c.auth.Token(ctx, SubstrateScope)
 	if err != nil {
 		return err
 	}
@@ -197,7 +209,7 @@ func (c *Client) ListPages(ctx context.Context, w Workspace) ([]Page, error) {
 	if err != nil {
 		return nil, err
 	}
-	tok, err := c.auth.Token(ctx, "https://"+pod.Host+"/.default")
+	tok, err := c.auth.Token(ctx, SharePointScope(pod.Host))
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +300,7 @@ func (c *Client) PageSnapshot(ctx context.Context, w Workspace, page Page) ([]by
 	if err != nil {
 		return nil, err
 	}
-	tok, err := c.auth.Token(ctx, "https://"+pod.Host+"/.default")
+	tok, err := c.auth.Token(ctx, SharePointScope(pod.Host))
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +320,7 @@ func (c *Client) PageSnapshot(ctx context.Context, w Workspace, page Page) ([]by
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("read page: HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
+		return nil, fmt.Errorf("read page: HTTP %d: %s", resp.StatusCode, truncate(redact(string(body)), 200))
 	}
 	return body, nil
 }
@@ -323,7 +335,7 @@ func (c *Client) doJSON(req *http.Request, out any) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("%s %s: HTTP %d: %s", req.Method, req.URL.Path, resp.StatusCode, truncate(string(body), 240))
+		return fmt.Errorf("%s %s: HTTP %d: %s", req.Method, req.URL.Path, resp.StatusCode, truncate(redact(string(body)), 240))
 	}
 	if out == nil {
 		return nil
@@ -336,6 +348,22 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+var (
+	jwtPattern       = regexp.MustCompile(`[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}`)
+	bearerPattern    = regexp.MustCompile(`(?i)(bearer\s+)[^\s,;"']+`)
+	jsonTokenPattern = regexp.MustCompile(`(?i)("?(?:access_?token|refresh_?token|id_?token|token)"?\s*[:=]\s*"?)[^\s,"'}]+`)
+)
+
+// redact removes credential material from a service response before it is
+// quoted in an error. Redaction happens before truncation so a clipped token
+// can never survive in a diagnostic.
+func redact(s string) string {
+	s = jwtPattern.ReplaceAllString(s, "[REDACTED]")
+	s = bearerPattern.ReplaceAllString(s, "${1}[REDACTED]")
+	s = jsonTokenPattern.ReplaceAllString(s, "${1}[REDACTED]")
+	return s
 }
 
 // upnFromJWT extracts the upn/unique_name claim from a JWT without validation.
