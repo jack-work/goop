@@ -7,6 +7,7 @@
 //	loop read  <workspace> [page]      print a page's text content
 //	loop members <workspace>           list who a workspace is shared with
 //	loop whoami                        show the signed-in identity
+//	loop version                       show build provenance (no auth)
 //
 // A <workspace> argument is a case-insensitive substring of the workspace
 // title (or its id). Auth uses the Windows WAM broker with the Microsoft Office
@@ -21,6 +22,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +30,7 @@ import (
 	"github.com/jack-work/goop/auth"
 	"github.com/jack-work/goop/daemon"
 	"github.com/jack-work/goop/loopapi"
+	"github.com/jack-work/msauth"
 )
 
 func main() {
@@ -56,6 +59,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 		default:
 			rest = append(rest, a)
 		}
+	}
+
+	// version answers from build metadata alone. It is handled before the
+	// token provider exists so it can never authenticate, read the token
+	// cache, or fail for an auth reason.
+	if args[0] == "version" || args[0] == "--version" {
+		if err := cmdVersion(stdout, asJSON); err != nil {
+			fmt.Fprintf(stderr, "\x1b[31merror:\x1b[0m %v\n", err)
+			return 1
+		}
+		return 0
 	}
 
 	tokens, err := auth.New()
@@ -113,6 +127,7 @@ usage:
   loop read  <workspace> [page]    print a page's text content
   loop members <workspace>         list who a workspace is shared with
   loop whoami                      show the signed-in identity
+  loop version                     show build provenance (no auth)
 
   loop daemon                      run the sync daemon (foreground)
   loop sync                        run a one-shot sync now
@@ -344,6 +359,73 @@ func cmdWhoami(ctx context.Context, tokens loopapi.TokenSource, stdout io.Writer
 	fmt.Fprintf(stdout, "  name:   %s\n", claims["name"])
 	fmt.Fprintf(stdout, "  tenant: %s\n", claims["tid"])
 	fmt.Fprintf(stdout, "  appid:  %s (%s)\n", claims["appid"], claims["app_displayname"])
+	return nil
+}
+
+// ---- build provenance ----
+
+// buildInfo names the code inside this binary: goop's own revision and the
+// version of the shared auth foundation it was compiled against. msauth is
+// linked as a library, so an installed artifact freezes whatever foundation
+// existed at build time; a foundation fix does not reach it until it is
+// rebuilt. Without this report, answering "does this artifact contain the
+// fixed broker?" means archaeology on the file, so the report exists to make
+// linkage a question anyone can ask the binary itself.
+type buildInfo struct {
+	Tool     string `json:"tool"`
+	Revision string `json:"revision"`
+	Modified bool   `json:"modified"`
+	Msauth   string `json:"msauth"`
+
+	// MsauthReplace names the directory a filesystem replace directive
+	// resolved the foundation from. Such a build reports no module version,
+	// so without the directive the msauth field alone would say "(devel)"
+	// and identify nothing.
+	MsauthReplace string `json:"msauthReplace,omitempty"`
+}
+
+func versionInfo() buildInfo {
+	info := buildInfo{Tool: "goop", Revision: "unknown", Msauth: msauth.Version()}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return info
+	}
+	for _, setting := range bi.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			info.Revision = setting.Value
+		case "vcs.modified":
+			info.Modified = setting.Value == "true"
+		}
+	}
+	for _, dep := range bi.Deps {
+		if dep.Path == msauthModulePath && dep.Replace != nil {
+			info.MsauthReplace = dep.Replace.Path
+		}
+	}
+	return info
+}
+
+// msauthModulePath is the import path of the shared auth foundation.
+const msauthModulePath = "github.com/jack-work/msauth"
+
+// cmdVersion prints build provenance. It performs no authentication and no
+// network call.
+func cmdVersion(stdout io.Writer, asJSON bool) error {
+	info := versionInfo()
+	if asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(info)
+	}
+	revision := info.Revision
+	if info.Modified {
+		revision += " (modified)"
+	}
+	fmt.Fprintf(stdout, "goop   %s\nmsauth %s\n", revision, info.Msauth)
+	if info.MsauthReplace != "" {
+		fmt.Fprintf(stdout, "       replaced from %s (no module version; local checkout)\n", info.MsauthReplace)
+	}
 	return nil
 }
 

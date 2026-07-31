@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/jack-work/msauth"
 )
 
 // TestExitCodeContract pins the CLI contract: 0 for help, 1 for a runtime
@@ -67,5 +70,48 @@ func TestRuntimeErrorIsReportedOnStderr(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "usage: loop read") {
 		t.Errorf("stderr lacks the command usage hint: %s", stderr.String())
+	}
+}
+
+// TestVersionReportsLinkedMsauthVersion pins the auditable-linkage contract:
+// msauth is compiled into this binary, so the binary must be able to say which
+// foundation it carries without authenticating. A build that cannot answer is
+// indistinguishable from a stale one.
+func TestVersionReportsLinkedMsauthVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"version", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("version --json exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+	}
+	var got buildInfo
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("version --json emitted invalid JSON (%v): %s", err, stdout.String())
+	}
+	if got.Msauth == "" {
+		t.Errorf("msauth field is empty: %s", stdout.String())
+	}
+	if got.Msauth != msauth.Version() {
+		t.Errorf("msauth field = %q, want the linked module version %q", got.Msauth, msauth.Version())
+	}
+	if got.Tool != "goop" {
+		t.Errorf("tool = %q, want goop", got.Tool)
+	}
+}
+
+func TestVersionHumanFormNamesMsauthAndDoesNotAuthenticate(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"version"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("version exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"goop", "msauth", msauth.Version()} {
+		if !strings.Contains(out, want) {
+			t.Errorf("version output missing %q:\n%s", want, out)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("version wrote to stderr: %s", stderr.String())
+	}
+	if replace := versionInfo().MsauthReplace; replace != "" && !strings.Contains(out, replace) {
+		t.Errorf("version output hides the filesystem replace %q:\n%s", replace, out)
 	}
 }
