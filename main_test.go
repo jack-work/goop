@@ -89,6 +89,14 @@ func TestVersionReportsLinkedMsauthVersion(t *testing.T) {
 	if got.Msauth == "" {
 		t.Errorf("msauth field is empty: %s", stdout.String())
 	}
+	// A version that names no code is a failure, not a display quirk: it is
+	// exactly the state in which nobody can tell a fixed foundation from a
+	// vulnerable one.
+	for _, forbidden := range []string{"", "(devel)", "unknown"} {
+		if got.Msauth == forbidden {
+			t.Errorf("msauth field = %q, which identifies no code", got.Msauth)
+		}
+	}
 	if got.Msauth != msauth.Version() {
 		t.Errorf("msauth field = %q, want the linked module version %q", got.Msauth, msauth.Version())
 	}
@@ -110,8 +118,5 @@ func TestVersionHumanFormNamesMsauthAndDoesNotAuthenticate(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("version wrote to stderr: %s", stderr.String())
-	}
-	if replace := versionInfo().MsauthReplace; replace != "" && !strings.Contains(out, replace) {
-		t.Errorf("version output hides the filesystem replace %q:\n%s", replace, out)
 	}
 }

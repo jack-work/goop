@@ -370,18 +370,13 @@ func cmdWhoami(ctx context.Context, tokens loopapi.TokenSource, stdout io.Writer
 // existed at build time; a foundation fix does not reach it until it is
 // rebuilt. Without this report, answering "does this artifact contain the
 // fixed broker?" means archaeology on the file, so the report exists to make
-// linkage a question anyone can ask the binary itself.
+// linkage a question anyone can ask the binary itself. The foundation version
+// comes from msauth.Version() alone: one mechanism, owned by the foundation.
 type buildInfo struct {
 	Tool     string `json:"tool"`
 	Revision string `json:"revision"`
 	Modified bool   `json:"modified"`
 	Msauth   string `json:"msauth"`
-
-	// MsauthReplace names the directory a filesystem replace directive
-	// resolved the foundation from. Such a build reports no module version,
-	// so without the directive the msauth field alone would say "(devel)"
-	// and identify nothing.
-	MsauthReplace string `json:"msauthReplace,omitempty"`
 }
 
 func versionInfo() buildInfo {
@@ -398,16 +393,8 @@ func versionInfo() buildInfo {
 			info.Modified = setting.Value == "true"
 		}
 	}
-	for _, dep := range bi.Deps {
-		if dep.Path == msauthModulePath && dep.Replace != nil {
-			info.MsauthReplace = dep.Replace.Path
-		}
-	}
 	return info
 }
-
-// msauthModulePath is the import path of the shared auth foundation.
-const msauthModulePath = "github.com/jack-work/msauth"
 
 // cmdVersion prints build provenance. It performs no authentication and no
 // network call.
@@ -423,9 +410,6 @@ func cmdVersion(stdout io.Writer, asJSON bool) error {
 		revision += " (modified)"
 	}
 	fmt.Fprintf(stdout, "goop   %s\nmsauth %s\n", revision, info.Msauth)
-	if info.MsauthReplace != "" {
-		fmt.Fprintf(stdout, "       replaced from %s (no module version; local checkout)\n", info.MsauthReplace)
-	}
 	return nil
 }
 
