@@ -19,4 +19,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/jack-work/msauth => C:/Users/jokellih/dev/msauth
+replace github.com/jack-work/msauth => ../msauth
