@@ -21,8 +21,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
+
+	"github.com/jack-work/msauth"
 )
 
 // SubstrateScope is the resource scope for Loop's Substrate discovery APIs.
@@ -187,7 +188,11 @@ func (c *Client) substrateGet(ctx context.Context, u string, out any) error {
 		return err
 	}
 	if c.upn == "" {
-		c.upn = upnFromJWT(tok)
+		// The foundation owns JWT claim reading; goop only decides that the
+		// sign-in name is what Substrate's anchor mailbox header wants.
+		if claims, ok := msauth.TokenClaims(tok); ok {
+			c.upn = claims.UserPrincipalName
+		}
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
@@ -320,7 +325,7 @@ func (c *Client) PageSnapshot(ctx context.Context, w Workspace, page Page) ([]by
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("read page: HTTP %d: %s", resp.StatusCode, truncate(redact(string(body)), 200))
+		return nil, fmt.Errorf("read page: HTTP %d: %s", resp.StatusCode, quoteBody(body, 200))
 	}
 	return body, nil
 }
@@ -335,7 +340,7 @@ func (c *Client) doJSON(req *http.Request, out any) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("%s %s: HTTP %d: %s", req.Method, req.URL.Path, resp.StatusCode, truncate(redact(string(body)), 240))
+		return fmt.Errorf("%s %s: HTTP %d: %s", req.Method, req.URL.Path, resp.StatusCode, quoteBody(body, 240))
 	}
 	if out == nil {
 		return nil
@@ -350,46 +355,18 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-var (
-	jwtPattern       = regexp.MustCompile(`[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}`)
-	bearerPattern    = regexp.MustCompile(`(?i)(bearer\s+)[^\s,;"']+`)
-	jsonTokenPattern = regexp.MustCompile(`(?i)("?(?:access_?token|refresh_?token|id_?token|token)"?\s*[:=]\s*"?)[^\s,"'}]+`)
-)
-
-// redact removes credential material from a service response before it is
-// quoted in an error. Redaction happens before truncation so a clipped token
-// can never survive in a diagnostic.
-func redact(s string) string {
-	s = jwtPattern.ReplaceAllString(s, "[REDACTED]")
-	s = bearerPattern.ReplaceAllString(s, "${1}[REDACTED]")
-	s = jsonTokenPattern.ReplaceAllString(s, "${1}[REDACTED]")
-	return s
-}
-
-// upnFromJWT extracts the upn/unique_name claim from a JWT without validation.
-func upnFromJWT(tok string) string {
-	parts := strings.Split(tok, ".")
-	if len(parts) < 2 {
-		return ""
+// quoteBody renders a service response body for quoting in an error.
+// Sanitizing happens before truncation so a clipped token can never survive in
+// a diagnostic; msauth.SanitizeDiagnostic bounds at 500 and goop then clips to
+// the caller's tighter limit.
+//
+// An empty body is reported as such rather than passed through, because the
+// foundation renders empty input as "credential source failed without
+// diagnostics" -- true for the credential diagnostics it was written for, and a
+// false accusation for an HTTP status whose body the service simply omitted.
+func quoteBody(body []byte, limit int) string {
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return "(empty body)"
 	}
-	b, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return ""
-	}
-	var claims struct {
-		UPN    string `json:"upn"`
-		Unique string `json:"unique_name"`
-		Email  string `json:"email"`
-	}
-	if json.Unmarshal(b, &claims) != nil {
-		return ""
-	}
-	switch {
-	case claims.UPN != "":
-		return claims.UPN
-	case claims.Unique != "":
-		return claims.Unique
-	default:
-		return claims.Email
-	}
+	return truncate(msauth.SanitizeDiagnostic(string(body)), limit)
 }

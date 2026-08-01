@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/jack-work/msauth"
 )
 
 // ---- hermetic seams: no network, no broker, no live token ----
@@ -18,12 +20,16 @@ import (
 type fakeTokens struct {
 	scopes []string
 	err    error
+	token  string // overrides fakeJWT when set
 }
 
 func (f *fakeTokens) Token(_ context.Context, scope string) (string, error) {
 	f.scopes = append(f.scopes, scope)
 	if f.err != nil {
 		return "", f.err
+	}
+	if f.token != "" {
+		return f.token, nil
 	}
 	return fakeJWT, nil
 }
@@ -307,10 +313,83 @@ func assertQuotedBodyLimit(t *testing.T, message, marker string, limit int) {
 	}
 }
 
-func TestRedactLeavesOrdinaryDiagnosticsIntact(t *testing.T) {
+func TestSanitizeLeavesOrdinaryDiagnosticsIntact(t *testing.T) {
 	const message = `{"error":{"code":"accessDenied","message":"Insufficient permissions on file."}}`
-	if got := redact(message); got != message {
-		t.Errorf("redact mangled a clean body:\n%s", got)
+	if got := msauth.SanitizeDiagnostic(message); got != message {
+		t.Errorf("the foundation sanitizer mangled a clean body:\n%s", got)
+	}
+}
+
+// The next three tests fail if goop grows a private redactor or JWT decoder
+// again. Each asserts behavior only the foundation's implementation has:
+// goop's deleted jsonTokenPattern had no leading word boundary and therefore
+// destroyed an assembly PublicKeyToken, and goop's deleted upnFromJWT called
+// base64.RawURLEncoding directly and therefore returned nothing for a padded
+// payload. A source-identical copy of either would fail here.
+
+const assemblyBody = `{"error":"denied","id_token":"opaqueidtokenvalue",` +
+	`"detail":"Assembly Microsoft.Identity.Client, PublicKeyToken=31bf3856ad364e35 not found"}`
+
+func TestQuotedBodyRedactsOpaqueIDTokenAndKeepsAssemblyIdentity(t *testing.T) {
+	client, _, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, assemblyBody)
+	}))
+
+	_, err := client.Recent(context.Background(), 10)
+	if err == nil {
+		t.Fatal("Recent succeeded, want HTTP 400 error")
+	}
+	message := err.Error()
+	// The value is deliberately not JWT-shaped, so only the field-name pattern
+	// can remove it.
+	if strings.Contains(message, "opaqueidtokenvalue") {
+		t.Errorf("an id_token value survived the diagnostic:\n%s", message)
+	}
+	// An assembly public key token is not a secret; it is the evidence a broker
+	// diagnostic exists to carry.
+	if !strings.Contains(message, "PublicKeyToken=31bf3856ad364e35") {
+		t.Errorf("the assembly identity was destroyed:\n%s", message)
+	}
+}
+
+func TestAnchorMailboxFallsBackToUniqueNameThroughAPaddedPayload(t *testing.T) {
+	payload := []byte(`{"unique_name":"legacy@example.invalid","oid":"00000000-0000-0000-0000-000000000001"}`)
+	padded := "eyJhbGciOiJub25lIn0." + base64.URLEncoding.EncodeToString(payload) + ".notasignature"
+	if !strings.Contains(padded, "=") {
+		t.Fatalf("payload encoded without padding; the test proves nothing: %s", padded)
+	}
+
+	client, tokens, transport := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"workspaces":[]}`)
+	}))
+	tokens.token = padded
+
+	if _, err := client.Recent(context.Background(), 10); err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if len(transport.seen) != 1 {
+		t.Fatalf("requests = %d, want 1", len(transport.seen))
+	}
+	if got := transport.seen[0].Header.Get("X-AnchorMailbox"); got != "UPN:legacy@example.invalid" {
+		t.Errorf("anchor mailbox = %q, want the unique_name claim", got)
+	}
+}
+
+func TestQuotedBodyNamesAnEmptyBodyRatherThanBlamingACredential(t *testing.T) {
+	client, _, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+
+	_, err := client.Recent(context.Background(), 10)
+	if err == nil {
+		t.Fatal("Recent succeeded, want HTTP 429 error")
+	}
+	if !strings.Contains(err.Error(), "(empty body)") {
+		t.Errorf("empty body was not named:\n%s", err)
+	}
+	if strings.Contains(err.Error(), "credential source failed") {
+		t.Errorf("an omitted response body was reported as a credential failure:\n%s", err)
 	}
 }
 

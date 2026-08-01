@@ -104,6 +104,36 @@ func TestTokenErrorNamesBothCredentialSources(t *testing.T) {
 	}
 }
 
+// TestTokenErrorUsesTheFoundationLayout fails if goop builds the diagnostic
+// itself again: the hand-rolled renderer printed "scope: code: message" with no
+// brackets around the top-level code, so every tool on the foundation printed a
+// different shape for the same failure.
+func TestTokenErrorUsesTheFoundationLayout(t *testing.T) {
+	failure := &msauth.AuthError{
+		Code:    msauth.CodeAcquisitionFailed,
+		Message: "no configured credential source could satisfy the token request",
+		Attempts: []msauth.Attempt{
+			{Source: "wam", Code: msauth.CodeBrokerAssemblyMismatch, Message: "PublicKeyToken=31bf3856ad364e35"},
+		},
+	}
+	p, _ := stub(t, msauth.TokenResult{}, failure)
+
+	_, err := p.Token(context.Background(), "https://substrate.office.com/.default")
+	if err == nil {
+		t.Fatal("Token succeeded, want failure")
+	}
+	want := msauth.FormatError("acquire token for https://substrate.office.com/.default", failure)
+	if err.Error() != want {
+		t.Errorf("rendering diverged from the foundation:\n got: %s\nwant: %s", err, want)
+	}
+	const literal = "acquire token for https://substrate.office.com/.default [acquisition_failed]: " +
+		"no configured credential source could satisfy the token request\n" +
+		"  wam [broker_assembly_mismatch]: PublicKeyToken=31bf3856ad364e35"
+	if err.Error() != literal {
+		t.Errorf("layout = %q, want %q", err.Error(), literal)
+	}
+}
+
 func TestTokenWrapsNonFoundationError(t *testing.T) {
 	sentinel := errors.New("context deadline exceeded")
 	p, _ := stub(t, msauth.TokenResult{}, sentinel)

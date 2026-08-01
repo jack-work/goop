@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/jack-work/msauth"
@@ -68,8 +67,10 @@ func (p *Provider) Token(ctx context.Context, scope string) (string, error) {
 }
 
 // Error reports a failed acquisition, naming every credential source that was
-// tried together with the foundation's stable error codes. The wrapped
-// *msauth.AuthError stays reachable through errors.As.
+// tried together with the foundation's stable error codes. The rendering is
+// the foundation's, so goop prints the same shape as every other tool on it;
+// goop supplies only the headline naming the scope it was acquiring for. The
+// wrapped *msauth.AuthError stays reachable through errors.As.
 type Error struct {
 	Scope string
 	Auth  *msauth.AuthError
@@ -84,12 +85,7 @@ func newError(scope string, err error) error {
 }
 
 func (e *Error) Error() string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "acquire token for %s: %s: %s", e.Scope, e.Auth.Code, e.Auth.Message)
-	for _, attempt := range e.Auth.Attempts {
-		fmt.Fprintf(&b, "\n  %s [%s]: %s", attempt.Source, attempt.Code, attempt.Message)
-	}
-	return b.String()
+	return msauth.FormatError("acquire token for "+e.Scope, e.Auth)
 }
 
 func (e *Error) Unwrap() error { return e.Auth }
