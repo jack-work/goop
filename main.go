@@ -65,16 +65,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// cache, or fail for an auth reason.
 	if args[0] == "version" || args[0] == "--version" {
 		if err := cmdVersion(stdout, asJSON); err != nil {
-			fmt.Fprintf(stderr, "\x1b[31merror:\x1b[0m %v\n", err)
-			return 1
+			return fatal(stderr, err)
 		}
 		return 0
 	}
 
 	tokens, err := auth.New()
 	if err != nil {
-		fmt.Fprintf(stderr, "\x1b[31merror:\x1b[0m %v\n", err)
-		return 1
+		return fatal(stderr, err)
 	}
 	tokens.Verbose = verbose
 	client := loopapi.New(tokens)
@@ -110,10 +108,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "\x1b[31merror:\x1b[0m %v\n", err)
-		return 1
+		return fatal(stderr, err)
 	}
 	return 0
+}
+
+// fatal renders a terminal error and, when the foundation can name the one
+// action that fixes it, that action on its own line. Which code implies which
+// remedy is msauth's decision and only msauth's: a goop-local mapping would
+// mean a hint corrected in the foundation reaches some tools and not others,
+// which is the exact failure this convergence exists to end. A non-auth error,
+// or an auth error whose codes imply no remedy, prints no extra line.
+func fatal(stderr io.Writer, err error) int {
+	fmt.Fprintf(stderr, "\x1b[31merror:\x1b[0m %v\n", err)
+	if hint := msauth.Hint(err); hint != "" {
+		fmt.Fprintln(stderr, hint)
+	}
+	return 1
 }
 
 func usage(w io.Writer) {

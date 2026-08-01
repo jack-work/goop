@@ -5,12 +5,98 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/jack-work/goop/auth"
 	"github.com/jack-work/goop/loopapi"
 	"github.com/jack-work/msauth"
 )
+
+// ---- fatal error rendering and the foundation's hint ----
+
+// authFailure builds the error a user actually sees: goop's own *auth.Error
+// wrapping a foundation *msauth.AuthError, so these tests exercise the same
+// errors.As path the real error path uses.
+func authFailure(attempts ...msauth.Attempt) error {
+	return &auth.Error{
+		Scope: loopapi.SubstrateScope,
+		Auth: &msauth.AuthError{
+			Code:     msauth.CodeAcquisitionFailed,
+			Message:  "no configured credential source could satisfy the token request",
+			Attempts: attempts,
+		},
+	}
+}
+
+// TestFatalPrintsTheFoundationHint pins the contract that goop tells a user
+// what to do about a fault they cannot diagnose alone. The remedies are
+// msauth's; goop must never map a code to text itself, so each want below is
+// compared against msauth.Hint rather than hard-coded twice.
+func TestFatalPrintsTheFoundationHint(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			"broker assembly mismatch",
+			authFailure(msauth.Attempt{Source: "wam", Code: msauth.CodeBrokerAssemblyMismatch, Message: "PublicKeyToken=31bf3856ad364e35"}),
+			"Run: msauth doctor",
+		},
+		{
+			"cold azure cli",
+			authFailure(msauth.Attempt{Source: "azure-cli", Code: msauth.CodeAzureCLIFailed, Message: "Azure CLI returned an empty token"}),
+			"Run: az login",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			if code := fatal(&stderr, tc.err); code != 1 {
+				t.Errorf("exit code = %d, want 1", code)
+			}
+			if got := msauth.Hint(tc.err); got != tc.want {
+				t.Fatalf("the foundation's own hint = %q, want %q; this test is measuring the wrong thing", got, tc.want)
+			}
+			lines := strings.Split(strings.TrimSuffix(stderr.String(), "\n"), "\n")
+			if lines[len(lines)-1] != tc.want {
+				t.Errorf("last line = %q, want the hint %q\nfull output:\n%s", lines[len(lines)-1], tc.want, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), string(msauth.CodeAcquisitionFailed)) {
+				t.Errorf("the hint replaced the diagnostic instead of following it:\n%s", stderr.String())
+			}
+		})
+	}
+}
+
+// TestFatalInventsNoHint is the assertion that stops a future edit from adding
+// a default remedy. A failure whose codes imply no action must print the
+// diagnostic and nothing else -- a hint that is wrong sends a signed-in user to
+// re-run a login that was never the problem.
+func TestFatalInventsNoHint(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"auth failure with no remedy", authFailure(msauth.Attempt{Source: "wam", Code: msauth.CodeWAMFailed, Message: "broker command failed"})},
+		{"not an auth error at all", errors.New("context deadline exceeded")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := msauth.Hint(tc.err); got != "" {
+				t.Fatalf("the foundation names a remedy %q for this case; the test is measuring the wrong thing", got)
+			}
+			var stderr bytes.Buffer
+			fatal(&stderr, tc.err)
+			want := fmt.Sprintf("\x1b[31merror:\x1b[0m %v\n", tc.err)
+			if stderr.String() != want {
+				t.Errorf("fatal added a line it could not justify:\n got %q\nwant %q", stderr.String(), want)
+			}
+		})
+	}
+}
 
 // ---- whoami claim rendering ----
 
