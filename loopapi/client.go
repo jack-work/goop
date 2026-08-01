@@ -360,10 +360,11 @@ func truncate(s string, n int) string {
 // a diagnostic; msauth.SanitizeDiagnostic bounds at 500 and goop then clips to
 // the caller's tighter limit.
 //
-// An empty body is reported as such rather than passed through, because the
-// foundation renders empty input as "credential source failed without
-// diagnostics" -- true for the credential diagnostics it was written for, and a
-// false accusation for an HTTP status whose body the service simply omitted.
+// The empty-body branch is belt-and-braces. The foundation's exported
+// sanitizer returns empty for empty input as of msauth ecd48da, so goop is no
+// longer working around a false "credential source failed" accusation; naming
+// the body is simply a better diagnostic than trailing off after the status
+// code, and it keeps that reading true whichever foundation is linked.
 func quoteBody(body []byte, limit int) string {
 	if len(strings.TrimSpace(string(body))) == 0 {
 		return "(empty body)"

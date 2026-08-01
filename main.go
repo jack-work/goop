@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -354,11 +353,14 @@ func cmdWhoami(ctx context.Context, tokens loopapi.TokenSource, stdout io.Writer
 	if err != nil {
 		return err
 	}
-	claims := decodeClaims(tok)
-	fmt.Fprintf(stdout, "signed in as \x1b[1m%s\x1b[0m\n", firstNonEmpty(claims["upn"], claims["unique_name"], claims["email"]))
-	fmt.Fprintf(stdout, "  name:   %s\n", claims["name"])
-	fmt.Fprintf(stdout, "  tenant: %s\n", claims["tid"])
-	fmt.Fprintf(stdout, "  appid:  %s (%s)\n", claims["appid"], claims["app_displayname"])
+	// The foundation owns JWT claim reading. A token that is not a decodable
+	// JWT yields the zero Claims, so the fields print blank exactly as the
+	// map-based decoder printed them for the same input.
+	claims, _ := msauth.TokenClaims(tok)
+	fmt.Fprintf(stdout, "signed in as \x1b[1m%s\x1b[0m\n", claims.UserPrincipalName)
+	fmt.Fprintf(stdout, "  name:   %s\n", claims.Name)
+	fmt.Fprintf(stdout, "  tenant: %s\n", claims.TenantID)
+	fmt.Fprintf(stdout, "  appid:  %s (%s)\n", claims.AppID, claims.AppDisplayName)
 	return nil
 }
 
@@ -530,44 +532,6 @@ func truncateStr(s string, n int) string {
 		return s
 	}
 	return string(r[:n-1]) + "…"
-}
-
-func decodeClaims(tok string) map[string]string {
-	out := map[string]string{}
-	parts := strings.Split(tok, ".")
-	if len(parts) < 2 {
-		return out
-	}
-	b, err := b64url(parts[1])
-	if err != nil {
-		return out
-	}
-	var m map[string]any
-	if json.Unmarshal(b, &m) != nil {
-		return out
-	}
-	for k, v := range m {
-		if s, ok := v.(string); ok {
-			out[k] = s
-		}
-	}
-	return out
-}
-
-func b64url(s string) ([]byte, error) {
-	if b, err := base64.RawURLEncoding.DecodeString(s); err == nil {
-		return b, nil
-	}
-	return base64.StdEncoding.DecodeString(s)
-}
-
-func firstNonEmpty(ss ...string) string {
-	for _, s := range ss {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 // ---- daemon / cache commands ----

@@ -376,7 +376,13 @@ func TestAnchorMailboxFallsBackToUniqueNameThroughAPaddedPayload(t *testing.T) {
 	}
 }
 
-func TestQuotedBodyNamesAnEmptyBodyRatherThanBlamingACredential(t *testing.T) {
+// TestQuotedBodyNamesAnEmptyBody pins the shape of a bodiless failure. It was
+// written when msauth.SanitizeDiagnostic("") returned "credential source failed
+// without diagnostics", which would have reported a 429 with no body as an auth
+// failure; the foundation now returns empty for empty input, so the second
+// assertion guards a fault that can only come back from the foundation and the
+// first pins goop's own choice to name the body rather than trail off.
+func TestQuotedBodyNamesAnEmptyBody(t *testing.T) {
 	client, _, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))

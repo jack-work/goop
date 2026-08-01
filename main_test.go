@@ -2,12 +2,82 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/jack-work/goop/loopapi"
 	"github.com/jack-work/msauth"
 )
+
+// ---- whoami claim rendering ----
+
+// fixedToken is a loopapi.TokenSource that hands back one synthetic,
+// unsigned string. No broker, no network, no cache.
+type fixedToken struct {
+	tok    string
+	scopes []string
+}
+
+func (f *fixedToken) Token(_ context.Context, scope string) (string, error) {
+	f.scopes = append(f.scopes, scope)
+	return f.tok, nil
+}
+
+// TestWhoamiRendersEveryClaimThroughTheFoundation fails if a private JWT
+// decoder returns to goop. The payload is base64url WITH padding and carries
+// no "upn", only "unique_name" -- the exact pair goop's deleted decoders got
+// wrong, since they called base64.RawURLEncoding directly and would decode
+// nothing at all here. The whole four-line output is compared, so a dropped or
+// added line fails too.
+func TestWhoamiRendersEveryClaimThroughTheFoundation(t *testing.T) {
+	payload := []byte(`{"unique_name":"legacy@example.invalid","name":"Legacy Tester",` +
+		`"tid":"72f988bf-86f1-41af-91ab-2d7cd011db47","appid":"d3590ed6-52b3-4102-aeff-aad2292ab01c",` +
+		`"app_displayname":"Microsoft Office"}`)
+	// JSON tolerates trailing whitespace, so pad the payload until base64url
+	// encoding actually emits "=". The test must EXERCISE padding, not hope this
+	// particular claim set happens to have a length that produces it.
+	for len(payload)%3 == 0 {
+		payload = append(payload, ' ')
+	}
+	padded := "eyJhbGciOiJub25lIn0." + base64.URLEncoding.EncodeToString(payload) + ".notasignature"
+	if !strings.Contains(padded, "=") {
+		t.Fatalf("payload encoded without padding; the test proves nothing: %s", padded)
+	}
+
+	source := &fixedToken{tok: padded}
+	var stdout bytes.Buffer
+	if err := cmdWhoami(context.Background(), source, &stdout); err != nil {
+		t.Fatalf("cmdWhoami: %v", err)
+	}
+
+	want := "signed in as \x1b[1mlegacy@example.invalid\x1b[0m\n" +
+		"  name:   Legacy Tester\n" +
+		"  tenant: 72f988bf-86f1-41af-91ab-2d7cd011db47\n" +
+		"  appid:  d3590ed6-52b3-4102-aeff-aad2292ab01c (Microsoft Office)\n"
+	if stdout.String() != want {
+		t.Errorf("whoami output =\n%q\nwant\n%q", stdout.String(), want)
+	}
+	if len(source.scopes) != 1 || source.scopes[0] != loopapi.SubstrateScope {
+		t.Errorf("scopes = %v, want one Substrate scope", source.scopes)
+	}
+}
+
+// A token that is not a decodable JWT must still print four lines with blank
+// values, which is what the deleted map-based decoder did. Printing fewer
+// lines, or panicking, would be a regression dressed as a cleanup.
+func TestWhoamiKeepsItsShapeForANonJWT(t *testing.T) {
+	var stdout bytes.Buffer
+	if err := cmdWhoami(context.Background(), &fixedToken{tok: "not-a-jwt"}, &stdout); err != nil {
+		t.Fatalf("cmdWhoami: %v", err)
+	}
+	want := "signed in as \x1b[1m\x1b[0m\n  name:   \n  tenant: \n  appid:   ()\n"
+	if stdout.String() != want {
+		t.Errorf("whoami output =\n%q\nwant\n%q", stdout.String(), want)
+	}
+}
 
 // TestExitCodeContract pins the CLI contract: 0 for help, 1 for a runtime
 // error, 2 for a usage error. Every case below is hermetic: it fails before any
