@@ -1,0 +1,25 @@
+# The github.com/jack-work/msauth revision this client's source requires.
+#
+# goop links the foundation as a Go LIBRARY, so an installed binary freezes
+# whatever foundation existed when it was built and inherits no later fix until
+# someone rebuilds it. That is the whole reason this file exists: between
+# 2026-07-28 and 2026-08-02 the foundation's convergence was declared five times
+# and reached exactly one of its five clients -- the only one that execs the
+# shared binary instead of linking it.
+#
+# TestInstalledArtifactCarriesTheRequiredFoundation judges the installed
+# artifact against this floor, reading its build metadata without running it.
+# An artifact carrying this revision OR ANY LATER ONE passes.
+#
+# Raise this when goop starts depending on something newer, then rebuild and
+# reinstall so the gate goes green again:
+#
+#   STAMP=$(git -C ../msauth rev-parse --short HEAD)
+#   [ -z "$(git -C ../msauth status --porcelain)" ] || STAMP="$STAMP+dirty"
+#   go build -ldflags "-X github.com/jack-work/msauth.Stamp=$STAMP" -o loop.exe .
+#
+# Write those as two statements. The tidier one-liner exits 1 on a clean tree.
+#
+# This file holds one revision and comments. It must never hold a filesystem
+# path: this repository is public, and an install path here names its author.
+29679c9

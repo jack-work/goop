@@ -83,6 +83,20 @@ One critical header for content reads: **`X-CLP-Compliant-App: true`** -- withou
 
 [`auth/`](auth) is a thin adapter over the shared `msauth` module: it selects the client, tenant, and `wam-first` policy, and renders foundation failures so every credential source that was tried is named with its stable error code. There is no goop-local token cache and no sidecar PowerShell script.
 
+### Keeping the installed binary current
+
+goop links the foundation as a Go library, so the binary you run contains a *frozen* copy of it: a fix in `msauth` does not reach `loop.exe` until somebody rebuilds. [`.msauth-floor`](.msauth-floor) names the foundation revision goop's source requires, and `TestInstalledArtifactCarriesTheRequiredFoundation` fails when the installed `loop.exe` carries an older one. It reads the binary's build metadata and never executes it.
+
+Rebuild with the foundation stamped, including whether that tree was dirty:
+
+```pwsh
+$stamp = git -C ../msauth rev-parse --short HEAD
+if (git -C ../msauth status --porcelain) { $stamp = "$stamp+dirty" }
+go build -ldflags "-X github.com/jack-work/msauth.Stamp=$stamp" -o loop.exe .
+```
+
+A `+dirty` stamp fails the gate on purpose: it names a revision whose content the binary does not contain, which is worse than being merely old, because being old is detectable.
+
 ## Daemon mode
 
 ```pwsh
