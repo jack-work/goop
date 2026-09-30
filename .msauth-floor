@@ -22,4 +22,13 @@
 #
 # This file holds one revision and comments. It must never hold a filesystem
 # path: this repository is public, and an install path here names its author.
-29679c9
+#
+# A VERSION, not a revision, since 2026-09-30: goop consumes msauth as a
+# published module (github.com/jack-work/msauth is public and tagged), so its
+# artifacts record a module version in build info and no git revision. A
+# revision floor could only ever call them stale. msauth v0.2.0 is where the
+# floor learned this dialect.
+#
+# This also un-breaks goop for anyone but its author: goop is public and used
+# to require msauth through `replace ../msauth`, so a clone could not build.
+v0.2.0

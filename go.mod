@@ -3,7 +3,7 @@ module github.com/jack-work/goop
 go 1.25.0
 
 require (
-	github.com/jack-work/msauth v0.0.0-00010101000000-000000000000
+	github.com/jack-work/msauth v0.2.0
 	modernc.org/sqlite v1.53.0
 )
 
@@ -18,5 +18,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/jack-work/msauth => ../msauth

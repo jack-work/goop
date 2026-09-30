@@ -48,6 +48,9 @@ go build -o loop.exe .
 
 **Requirements:** Go 1.24+, Windows (WAM broker auth), `Az.Accounts` PowerShell module installed.
 
+The shared [`msauth`](https://github.com/jack-work/msauth) foundation is an ordinary
+module dependency, so a clone builds without any sibling checkout.
+
 ## Configuration
 
 ```toml
